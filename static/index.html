@@ -1133,7 +1133,6 @@ function updateElement(el, rawMarkdown, formatFn) {
                                 <i :class="isConversationGroupCollapsed(group.id) ? 'fa-solid fa-chevron-right' : 'fa-solid fa-chevron-down'"></i>
                               </el-button>
                               <el-dropdown
-                                v-if="group.id !== 'default'"
                                 trigger="click"
                                 placement="bottom-end"
                                 @click.stop
@@ -1143,10 +1142,13 @@ function updateElement(el, rawMarkdown, formatFn) {
                                 </el-button>
                                 <template #dropdown>
                                   <el-dropdown-menu>
-                                    <el-dropdown-item @click="openRenameConversationGroupDialog(group)">
+                                    <el-dropdown-item v-if="group.id !== 'default'" @click="openRenameConversationGroupDialog(group)">
                                       {{ t('rename') }}
                                     </el-dropdown-item>
-                                    <el-dropdown-item divided @click="openDeleteGroupDialog(group)">
+                                    <el-dropdown-item @click="clearConversationGroupChats(group.id)">
+                                      {{ t('clearGroupChats') }}
+                                    </el-dropdown-item>
+                                    <el-dropdown-item v-if="group.id !== 'default'" divided @click="openDeleteGroupDialog(group)">
                                       {{ t('delete') }}
                                     </el-dropdown-item>
                                   </el-dropdown-menu>

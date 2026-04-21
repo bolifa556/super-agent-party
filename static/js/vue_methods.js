@@ -814,6 +814,39 @@ let vue_methods = {
         showNotification(this.t('groupDeleted'), 'success');
       }
     },
+    async clearConversationGroupChats(groupId) {
+      this.ensureConversationGroups();
+      if (!groupId) return;
+      try {
+        await this.$confirm(this.t('clearGroupChatsConfirm'), this.t('warning'), {
+          confirmButtonText: this.t('confirm'),
+          cancelButtonText: this.t('cancel'),
+          type: 'warning'
+        });
+
+        const groupConversationIds = this.conversations
+          .filter(conv => (conv.groupId || 'default') === groupId)
+          .map(conv => conv.id);
+
+        for (const conversationId of groupConversationIds) {
+          await this.deleteConversationById(conversationId, {
+            deleteMemory: true,
+          });
+        }
+
+        if (this.conversationId === null) {
+          this.messages = [{ id: Date.now() + Math.random(), role: 'system', content: this.system_prompt }];
+          this.fileLinks = [];
+        }
+
+        await this.saveConversations();
+        showNotification(this.t('groupChatsCleared'), 'success');
+      } catch (error) {
+        if (error?.message === 'delete_failed') {
+          showNotification(this.t('deleteFailed') || 'Delete failed', 'error');
+        }
+      }
+    },
     async confirmDeleteGroupDeletion() {
       const groupId = this.deleteGroupForm?.id;
       if (!groupId) return;
