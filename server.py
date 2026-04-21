@@ -1546,11 +1546,19 @@ def _build_group_memory_prompt(group: dict, memories: list[dict]) -> str:
         return ""
     header = [
         f"当前对话分组: {group.get('name') or group.get('id')}",
-        "以下是仅限当前分组可用的长期记忆，请只在相关时使用，不要臆测或扩展未确认的信息：",
+        "以下是仅限当前分组可用的长期记忆，请只在相关时使用，不要臆测或扩展未确认的信息。",
+        "如果记忆中包含具体值，请优先直接复述具体值，不要用“见记忆条目”或占位说明代替：",
     ]
     lines = []
     for idx, memory in enumerate(memories, 1):
-        lines.append(f"{idx}. [{memory.get('memory_type', 'fact')}] {memory.get('summary') or memory.get('content')}")
+        summary = str(memory.get('summary') or '').strip()
+        content = str(memory.get('content') or '').strip()
+        memory_type = memory.get('memory_type', 'fact')
+        if summary and content and summary != content:
+            lines.append(f"{idx}. [{memory_type}] 摘要: {summary}")
+            lines.append(f"   具体内容: {content}")
+        else:
+            lines.append(f"{idx}. [{memory_type}] {content or summary}")
     return "\n".join(header + lines)
 
 def _trim_request_messages(messages: List[Dict], recent_count: int = 12) -> List[Dict]:
