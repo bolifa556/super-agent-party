@@ -283,11 +283,29 @@ const ALLOWED_IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp'];
 const ALLOWED_VIDEO_EXTENSIONS =['mp4', 'webm', 'ogg', 'mov', 'avi'];
 let currentLanguage = 'zh-CN';
 
+function getInitialDataRoot() {
+  const defaultDataRoot = path.join(app.getPath('userData'), 'Super-Agent-Party');
+  const configPath = path.join(app.getPath('userData'), 'config.json');
+  if (!fs.existsSync(configPath)) {
+    return defaultDataRoot;
+  }
+  try {
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const customDataRoot = typeof config?.SUPER_AGENT_PARTY_DATA_DIR === 'string'
+      ? config.SUPER_AGENT_PARTY_DATA_DIR.trim()
+      : '';
+    return customDataRoot ? path.resolve(customDataRoot) : defaultDataRoot;
+  } catch (error) {
+    console.error('Failed to read initial data root:', error);
+    return defaultDataRoot;
+  }
+}
+
 // 构建菜单项
 let menu;
 
 // 配置日志文件路径
-const logDir = path.join(app.getPath('userData'), 'logs')
+const logDir = path.join(getInitialDataRoot(), 'logs')
 if (!fs.existsSync(logDir)) {
   fs.mkdirSync(logDir, { recursive: true })
 }
@@ -295,6 +313,129 @@ if (!fs.existsSync(logDir)) {
 // 获取配置文件路径
 function getConfigPath() {
   return path.join(app.getPath('userData'), 'config.json');
+}
+
+const STORAGE_DATA_ROOT_ENV_KEY = 'SUPER_AGENT_PARTY_DATA_DIR';
+const STORAGE_SKILLS_ROOT_ENV_KEY = 'SUPER_AGENT_PARTY_SKILLS_DIR';
+
+function readConfigFile() {
+  const configPath = getConfigPath();
+  if (!fs.existsSync(configPath)) {
+    return {};
+  }
+  try {
+    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    console.error('配置文件读取出错:', e);
+    return {};
+  }
+}
+
+function writeConfigFile(config) {
+  fs.writeFileSync(getConfigPath(), JSON.stringify(config, null, 2));
+}
+
+function normalizeDirPath(dirPath) {
+  if (typeof dirPath !== 'string') {
+    return '';
+  }
+  const trimmed = dirPath.trim();
+  if (!trimmed) {
+    return '';
+  }
+  return path.resolve(trimmed);
+}
+
+function getDefaultDataRoot() {
+  return path.join(app.getPath('userData'), 'Super-Agent-Party');
+}
+
+function getDefaultSkillsRoot() {
+  return path.join(os.homedir(), '.agents', 'skills');
+}
+
+function getEffectiveDataRoot(config = globalConfig) {
+  return normalizeDirPath(config?.[STORAGE_DATA_ROOT_ENV_KEY]) || getDefaultDataRoot();
+}
+
+function getEffectiveSkillsRoot(config = globalConfig) {
+  return normalizeDirPath(config?.[STORAGE_SKILLS_ROOT_ENV_KEY]) || getDefaultSkillsRoot();
+}
+
+function getStorageConfigSnapshot(config = globalConfig) {
+  const customDataRoot = normalizeDirPath(config?.[STORAGE_DATA_ROOT_ENV_KEY]);
+  const customSkillsRoot = normalizeDirPath(config?.[STORAGE_SKILLS_ROOT_ENV_KEY]);
+  return {
+    customDataRoot,
+    customSkillsRoot,
+    effectiveDataRoot: customDataRoot || getDefaultDataRoot(),
+    effectiveSkillsRoot: customSkillsRoot || getDefaultSkillsRoot(),
+    defaultDataRoot: getDefaultDataRoot(),
+    defaultSkillsRoot: getDefaultSkillsRoot(),
+    pendingMigration: config?.pendingStorageMigration || null,
+  };
+}
+
+function isSubPath(parentPath, childPath) {
+  const parent = path.resolve(parentPath);
+  const child = path.resolve(childPath);
+  return child.startsWith(parent + path.sep);
+}
+
+function copyDirectoryContents(sourceDir, targetDir) {
+  if (!fs.existsSync(sourceDir)) {
+    return;
+  }
+  fs.mkdirSync(targetDir, { recursive: true });
+  for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
+    const src = path.join(sourceDir, entry.name);
+    const dest = path.join(targetDir, entry.name);
+    if (fs.existsSync(dest)) {
+      if (entry.isDirectory()) {
+        copyDirectoryContents(src, dest);
+      }
+      continue;
+    }
+    fs.cpSync(src, dest, { recursive: true });
+  }
+}
+
+function runPendingStorageMigration(config) {
+  const pending = config?.pendingStorageMigration;
+  if (!pending || typeof pending !== 'object') {
+    return config;
+  }
+
+  let migrationSucceeded = true;
+  try {
+    if (pending.dataRoot?.from && pending.dataRoot?.to) {
+      const fromDir = normalizeDirPath(pending.dataRoot.from);
+      const toDir = normalizeDirPath(pending.dataRoot.to);
+      if (fromDir && toDir && fromDir !== toDir && fs.existsSync(fromDir) && !isSubPath(fromDir, toDir)) {
+        copyDirectoryContents(fromDir, toDir);
+      }
+    }
+
+    if (pending.skillsRoot?.from && pending.skillsRoot?.to) {
+      const fromDir = normalizeDirPath(pending.skillsRoot.from);
+      const toDir = normalizeDirPath(pending.skillsRoot.to);
+      if (fromDir && toDir && fromDir !== toDir && fs.existsSync(fromDir) && !isSubPath(fromDir, toDir)) {
+        copyDirectoryContents(fromDir, toDir);
+      }
+    }
+  } catch (error) {
+    migrationSucceeded = false;
+    console.error('执行数据迁移失败:', error);
+  }
+
+  if (!migrationSucceeded) {
+    return config;
+  }
+
+  const nextConfig = { ...config };
+  delete nextConfig.pendingStorageMigration;
+  writeConfigFile(nextConfig);
+  return nextConfig;
 }
 
 // 加载环境变量
@@ -342,7 +483,54 @@ function saveEnvVariable(key, value) {
   }
 }
 
-const globalConfig = loadEnvVariables();
+function saveStorageConfig({ dataRoot = '', skillsRoot = '' } = {}) {
+  const config = readConfigFile();
+  const currentSnapshot = getStorageConfigSnapshot(config);
+  const nextDataRoot = normalizeDirPath(dataRoot);
+  const nextSkillsRoot = normalizeDirPath(skillsRoot);
+  const effectiveNextDataRoot = nextDataRoot || currentSnapshot.defaultDataRoot;
+  const effectiveNextSkillsRoot = nextSkillsRoot || currentSnapshot.defaultSkillsRoot;
+
+  if (nextDataRoot) {
+    config[STORAGE_DATA_ROOT_ENV_KEY] = nextDataRoot;
+  } else {
+    delete config[STORAGE_DATA_ROOT_ENV_KEY];
+  }
+
+  if (nextSkillsRoot) {
+    config[STORAGE_SKILLS_ROOT_ENV_KEY] = nextSkillsRoot;
+  } else {
+    delete config[STORAGE_SKILLS_ROOT_ENV_KEY];
+  }
+
+  const pendingMigration = {};
+  if (currentSnapshot.effectiveDataRoot !== effectiveNextDataRoot) {
+    pendingMigration.dataRoot = {
+      from: currentSnapshot.effectiveDataRoot,
+      to: effectiveNextDataRoot,
+    };
+  }
+  if (currentSnapshot.effectiveSkillsRoot !== effectiveNextSkillsRoot) {
+    pendingMigration.skillsRoot = {
+      from: currentSnapshot.effectiveSkillsRoot,
+      to: effectiveNextSkillsRoot,
+    };
+  }
+
+  if (Object.keys(pendingMigration).length > 0) {
+    config.pendingStorageMigration = pendingMigration;
+  } else {
+    delete config.pendingStorageMigration;
+  }
+
+  writeConfigFile(config);
+  process.env[STORAGE_DATA_ROOT_ENV_KEY] = config[STORAGE_DATA_ROOT_ENV_KEY] || '';
+  process.env[STORAGE_SKILLS_ROOT_ENV_KEY] = config[STORAGE_SKILLS_ROOT_ENV_KEY] || '';
+  globalConfig = config;
+  return getStorageConfigSnapshot(config);
+}
+
+let globalConfig = runPendingStorageMigration(loadEnvVariables());
 
 // 定义全局变量
 let SESSION_CDP_PORT = 0; // 初始为0
@@ -862,6 +1050,14 @@ app.whenReady().then(async () => {
       return app.getAppPath();
     });
 
+    ipcMain.handle('get-storage-config', () => {
+      return getStorageConfigSnapshot(readConfigFile());
+    });
+
+    ipcMain.handle('save-storage-config', async (_, payload = {}) => {
+      return saveStorageConfig(payload);
+    });
+
     // 1. 获取 CDP 状态 (前端初始化用)
     ipcMain.handle('get-internal-cdp-info', () => {
       return {
@@ -898,7 +1094,7 @@ app.whenReady().then(async () => {
     ipcMain.handle('save-screenshot-direct', async (event, { buffer }) => {
       // 1. 确定保存路径: userData/uploaded_files
       // 确保这个路径和 Python 后端挂载的静态目录一致
-      const uploadDir = path.join(app.getPath('userData'),'Super-Agent-Party', 'uploaded_files');
+      const uploadDir = path.join(getEffectiveDataRoot(), 'uploaded_files');
       
       // 2. 确保目录存在
       if (!fs.existsSync(uploadDir)) {

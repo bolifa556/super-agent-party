@@ -14,6 +14,8 @@ from appdirs import user_data_dir
 APP_NAME = "Super-Agent-Party"
 HOST = None
 PORT = None
+DATA_ROOT_ENV_KEY = "SUPER_AGENT_PARTY_DATA_DIR"
+SKILLS_ROOT_ENV_KEY = "SUPER_AGENT_PARTY_SKILLS_DIR"
 
 IS_DOCKER = os.environ.get("IS_DOCKER", "").lower() in ("1", "true")
 
@@ -28,11 +30,24 @@ def get_base_path():
 
 base_path = get_base_path()
 
+def _normalize_dir(path_value):
+    if not path_value:
+        return None
+    normalized = os.path.abspath(os.path.expanduser(str(path_value).strip()))
+    return normalized if normalized else None
+
+def get_default_user_data_dir():
+    if IS_DOCKER:
+        return '/app/data'
+    return user_data_dir(APP_NAME, roaming=True)
+
+def get_default_global_skills_dir():
+    if IS_DOCKER:
+        return str(Path('/app/.agents/skills'))
+    return str(Path.home() / '.agents' / 'skills')
+
 # ----------------- 2. 路径定义 -----------------
-if IS_DOCKER:
-    USER_DATA_DIR = '/app/data'
-else:
-    USER_DATA_DIR = user_data_dir(APP_NAME, roaming=True)
+USER_DATA_DIR = _normalize_dir(os.environ.get(DATA_ROOT_ENV_KEY)) or get_default_user_data_dir()
 
 # --- 核心目录 ---
 LOG_DIR = os.path.join(USER_DATA_DIR, 'logs')
@@ -52,7 +67,11 @@ def get_global_skills_dir():
     获取标准的全局Agent Skills目录，支持跨平台
     标准路径: ~/.agents/skills (macOS/Linux) 或 %USERPROFILE%\.agents\skills (Windows)
     """
-    home_dir = Path.home()
+    custom_skills_dir = _normalize_dir(os.environ.get(SKILLS_ROOT_ENV_KEY))
+    if custom_skills_dir:
+        custom_path = Path(custom_skills_dir)
+        custom_path.mkdir(parents=True, exist_ok=True)
+        return str(custom_path)
     
     # 检查是否在Docker环境中
     if IS_DOCKER:
@@ -62,7 +81,7 @@ def get_global_skills_dir():
         return str(docker_skills_dir)
     
     # 标准全局路径
-    global_skills_dir = home_dir / '.agents' / 'skills'
+    global_skills_dir = Path(custom_skills_dir) if custom_skills_dir else Path(get_default_global_skills_dir())
     
     # 确保目录存在
     global_skills_dir.mkdir(parents=True, exist_ok=True)

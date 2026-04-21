@@ -796,6 +796,7 @@ const app = Vue.createApp({
     if (isElectron) {
       this.isMac = window.electron.isMac;
       this.isWindows = window.electron.isWindows;
+      this.loadStorageConfig();
     }
     this.initWebSocket();
     this.highlightCode();

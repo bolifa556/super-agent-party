@@ -23,6 +23,10 @@
       "proxyMode": "system",
       "isChinaProxy": false
     },
+    "dataPaths": {
+      "customDataRoot": "",
+      "customSkillsRoot": ""
+    },
     "mainAgent":"super-model",
     "mcpServers": {},
     "llmTools": [],
@@ -582,6 +586,7 @@
     "stickerPacks": [],
     "currentLanguage": "zh-CN",
     "isBtnCollapse": true,
+    "showHistorySidebar":true,
     "is_sandbox": false,
     "showBrowserChat": false,
     "searchEngine": "party",

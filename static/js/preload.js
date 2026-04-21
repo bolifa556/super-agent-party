@@ -53,6 +53,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openPath: (filePath) => shell.openPath(filePath),
   getAppPath: () => ipcRenderer.invoke('get-app-path'),
   getPath: () => remote.app.getPath('downloads'),
+  getStorageConfig: () => ipcRenderer.invoke('get-storage-config'),
+  saveStorageConfig: (payload) => ipcRenderer.invoke('save-storage-config', payload),
   // 窗口控制
   windowAction: (action) => ipcRenderer.invoke('window-action', action),
   onWindowState: (callback) => ipcRenderer.on('window-state', callback),

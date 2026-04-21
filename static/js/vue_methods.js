@@ -1774,6 +1774,7 @@ let vue_methods = {
             extra_params: data.data.extra_params || [],
           };
           this.isBtnCollapse = data.data.isBtnCollapse || false;
+          this.showHistorySidebar = data.data.showHistorySidebar || false;
           this.system_prompt = data.data.system_prompt || '';
           this.SystemPromptsList = data.data.SystemPromptsList || [];
           this.conversations = data.data.conversations || this.conversations;
@@ -2147,7 +2148,7 @@ let vue_methods = {
         this.stopAllAudioPlayback();
         this.TTSrunning = false;
 
-        if (this.vrmOnline && this.ttsWebSocket) {
+        if ((this.vrmOnline || this.vtsOnline) && this.ttsWebSocket) {
             this.ttsWebSocket.send(JSON.stringify({ type: 'ttsStarted', data: {} }));
         }
 
@@ -2783,7 +2784,7 @@ let vue_methods = {
                             this.playPCMChunk(delta.audio.data, currentMsg.pure_content, currentMsg);
                         }
                         if (parsed.usage?.total_tokens) {
-                            currentMsg.total_tokens = parsed.usage.total_tokens;
+                            currentMsg.total_tokens += parsed.usage.total_tokens;
                         }
                         if (delta.async_tool_id) {
                             if (!this.asyncToolsID) this.asyncToolsID = [];
@@ -3135,7 +3136,7 @@ let vue_methods = {
             }
 
             // ======= 【核心修改：利用二进制同步到 VRM】 =======
-            if (this.vrmOnline && this.ttsWebSocket) {
+            if ((this.vrmOnline || this.vtsOnline) && this.ttsWebSocket) {
                 const pcmUint8 = new Uint8Array(raw.length);
                 for(let i=0; i<raw.length; i++) pcmUint8[i] = raw.charCodeAt(i);
                 
@@ -3170,7 +3171,7 @@ let vue_methods = {
                     if (message.generationFinished && this.activeSources.length === 0) {
                         message.isPlaying = false;
                         message.omniCurrentTime = message.omniDuration;
-                        if (this.vrmOnline) this.sendTTSStatusToVRM('allChunksCompleted', {});
+                        if (this.vrmOnline || this.vtsOnline) this.sendTTSStatusToVRM('allChunksCompleted', {});
                         this.isOmniPlaying = false;
                     }
                 }
@@ -3337,6 +3338,7 @@ let vue_methods = {
         // 构造 payload（保持原有逻辑）
         const payload = {
           ...this.settings,
+          showHistorySidebar: this.showHistorySidebar,
           system_prompt: this.system_prompt,
           SystemPromptsList: this.SystemPromptsList,
           agents: this.agents,
@@ -8736,7 +8738,7 @@ handleCreateSlackSeparator(val) {
                     type: 'startSpeaking',
                     data: { chunkIndex: index, text: chunk_text, voice: 'silence', expressions: chunk_expressions }
                 });
-                if (this.ttsWebSocket && this.vrmOnline) this.ttsWebSocket.send(cmd);
+                if (this.ttsWebSocket && (this.vrmOnline || this.vtsOnline)) this.ttsWebSocket.send(cmd);
                 message.audioChunks[index] = { url: null, expressions: chunk_expressions, text: chunk_text, index };
                 this.checkAudioPlayback();
             } else {
@@ -8850,7 +8852,7 @@ handleCreateSlackSeparator(val) {
 
             try {
                 // --- 核心同步修改点：只有非弹幕块且 VRM 在线时，才在此刻发送二进制数据 ---
-                if (!isVrmSilent && vrmIndex >= 0 && this.vrmOnline && audioChunk.buffer) {
+                if (!isVrmSilent && vrmIndex >= 0 && (this.vrmOnline || this.vtsOnline) && audioChunk.buffer) {
                     const metadata = {
                         type: 'audio_chunk',
                         chunkIndex: vrmIndex,
@@ -8903,13 +8905,16 @@ handleCreateSlackSeparator(val) {
             }
         }
     },
+    // 修改轮询函数
     pollVRMStatus() {
       this.vrmPollTimer = setInterval(async () => {
         try {
           const r = await fetch('/tts/status').then(r => r.json())
-          this.vrmOnline = r.vrm_connections > 0
+          this.vrmOnline = r.vrm_connections > 0;
+          this.vtsOnline = r.vts_active; // 获取 VTS 是否激活
         } catch (e) {
-          this.vrmOnline = false
+          this.vrmOnline = false;
+          this.vtsOnline = false;
         }
       }, 3000)
     },
@@ -9418,9 +9423,49 @@ handleCreateSlackSeparator(val) {
         this.wsConnected = true;
       };
       
+      // 核心反馈处理：监听后端发来的 JSON 消息
+      this.ttsWebSocket.onmessage = async (event) => {
+        try {
+          // 判断消息类型：处理文本（JSON）
+          if (typeof event.data === 'string') {
+            const msg = JSON.parse(event.data);
+            
+            // 匹配 VTS 状态反馈
+            if (msg.type === 'vts_connection_status') {
+              this.isVTSStarting = false; // 收到消息，停止 Loading
+              
+              if (msg.data.success) {
+                // 真的连接成功了
+                this.VTSConfig.enabled = true;
+                showNotification(msg.data.message || 'VTube Studio 已连接', 'success', 'VTS');
+              } else {
+                // 连接失败：回退开关状态
+                this.VTSConfig.enabled = false;
+                // 弹出错误提示，引导用户开启 VTS
+                showNotification(
+                  msg.data.message || '请确保 VTube Studio 已开启 API 访问权限', 
+                  'error', 
+                  'VTS connection failed'
+                );
+              }
+              this.autoSaveSettings(); // 同步保存到本地配置
+            }
+          } 
+          // 处理二进制（音频流）：如果是音频，则转发或播放
+          else if (event.data instanceof Blob) {
+            // 这里可以保留你原来的逻辑，比如交给 VRM 播放器
+            // this.handleAudioBlob(event.data); 
+          }
+        } catch (e) {
+          console.error('解析 WebSocket 消息出错:', e);
+        }
+      };
+      
       this.ttsWebSocket.onclose = () => {
         console.log('TTS WebSocket disconnected');
         this.wsConnected = false;
+        this.isVTSStarting = false; // 断开时停止加载
+        
         // 自动重连
         setTimeout(() => {
           if (!this.wsConnected) {
@@ -9431,6 +9476,7 @@ handleCreateSlackSeparator(val) {
       
       this.ttsWebSocket.onerror = (error) => {
         console.error('TTS WebSocket error:', error);
+        this.isVTSStarting = false;
       };
     },
     
@@ -13345,8 +13391,14 @@ async togglePlugin(plugin) {
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
+  },
+
+  handleHistoryToggle() {
+      this.showHistorySidebar = !this.showHistorySidebar;
+      // 强制触发一次 recalculate，让右侧聊天区重新适应剩余宽度
+      this.$nextTick(() => {
+          this.handleResize(); 
+      });
   },
 
   // 使用像素宽度更新面板
@@ -13397,18 +13449,40 @@ async togglePlugin(plugin) {
   },
 
   // 收起对话区域
-  collapseChatArea() {
-    this.chatAreaOpen = false;
-    this.sidePanelWidth = 100;
-    this.updatePanelWidths();
-  },
+// 收起左侧对话区域（让右侧面板向左填充）
+collapseChatArea() {
+  const sidePanel = this.$refs.sidePanelRef;
+  const chatArea = this.$refs.chatAreaRef;
 
-  // 收起侧边栏
-  collapseSidePanel() {
-    this.sidePanelOpen = false;
-    this.chatAreaWidth = 100;
-    this.updatePanelWidths();
-  },
+  // 1. 核心修复：在隐藏左侧前，先清除右侧的像素限制
+  if (sidePanel) sidePanel.style.width = '';
+  if (chatArea) chatArea.style.width = '';
+
+  // 2. 更新状态
+  this.chatAreaOpen = false;
+  this.sidePanelOpen = true; 
+  this.sidePanelWidth = 100;
+  this.chatAreaWidth = 0;
+
+  // 3. 应用百分比布局
+  this.updatePanelWidths();
+},
+
+// 收起右侧侧边栏（让左侧对话区向右填充）
+collapseSidePanel() {
+  const chatArea = this.$refs.chatAreaRef;
+  const sidePanel = this.$refs.sidePanelRef;
+
+  if (chatArea) chatArea.style.width = '';
+  if (sidePanel) sidePanel.style.width = '';
+
+  this.sidePanelOpen = false;
+  this.chatAreaOpen = true;
+  this.chatAreaWidth = 100;
+  this.sidePanelWidth = 0;
+
+  this.updatePanelWidths();
+},
 
   // 展开对话区域
   expandChatArea() {
@@ -13435,7 +13509,7 @@ async togglePlugin(plugin) {
     this.updatePanelWidths();
   },
 
-  // 更新面板宽度样式（用于非拖拽时的调整）
+  // 更新面板宽度样式
   updatePanelWidths() {
     this.$nextTick(() => {
       const chatArea = this.$refs.chatAreaRef;
@@ -13444,6 +13518,10 @@ async togglePlugin(plugin) {
       if (!chatArea || !sidePanel) {
         return;
       }
+      
+      // ✨ 核心修复 1：每次切换状态前，强制清除拖拽留下的内联 px 宽度
+      chatArea.style.width = '';
+      sidePanel.style.width = '';
       
       if (this.chatAreaOpen && this.sidePanelOpen) {
         chatArea.style.width = `${this.chatAreaWidth}%`;
@@ -17471,4 +17549,78 @@ gotoAddExtension(){
   this.openAddExtensionDialog();
 },
 
+  // 2. 添加这两个处理鼠标状态的方法
+  handleExtMouseMove() {
+    this.extButtonVisible = true;
+    
+    // 清除上一次的定时器
+    if (this.extMouseTimer) {
+      clearTimeout(this.extMouseTimer);
+    }
+    
+    // 如果鼠标停止移动 1.5 秒，自动隐藏按钮
+    this.extMouseTimer = setTimeout(() => {
+      this.extButtonVisible = false;
+    }, 1500);
+  },
+  
+  hideExtButton() {
+    this.extButtonVisible = false;
+    if (this.extMouseTimer) {
+      clearTimeout(this.extMouseTimer);
+    }
+  },
+
+  async toggleVTSConnection() {
+    // 如果正在连接中，禁止重复点击
+    if (this.isVTSStarting) return;
+    
+    this.isVTSStarting = true; // 开启 Loading 动画 (按钮转圈)
+    
+    try {
+      if (this.VTSConfig.enabled) {
+        // 动作：停止连接
+        // 注意：这里不直接设 enabled = false，而是等待后端确认后再改
+        this.sendTTSStatusToVRM('stopVTS_Driver', {});
+      } else {
+        // 动作：发起连接
+        this.sendTTSStatusToVRM('startVTS_Driver', this.VTSConfig);
+        
+        // 设置一个 10 秒的超时逻辑
+        // 如果 10 秒内后端没有通过 WS 返回任何 status 消息，则自动回退状态
+        setTimeout(() => {
+          if (this.isVTSStarting) {
+            this.isVTSStarting = false;
+            showNotification('VTS 连接超时，请检查后端程序是否运行', 'warning', '连接超时');
+          }
+        }, 10000);
+      }
+    } catch (e) {
+      console.error("VTS 操作失败:", e);
+      this.isVTSStarting = false;
+      showNotification('指令发送失败，请检查网络', 'error');
+    }
+  },
+  
+  async startVTS() {
+    // 模拟或实际发送 WS 指令
+    this.sendTTSStatusToVRM('startVTS_Driver', this.VTSConfig);
+    this.VTSConfig.enabled = true;
+    this.autoSaveSettings();
+  },
+  
+  async stopVTS() {
+    this.sendTTSStatusToVRM('stopVTS_Driver', {});
+    this.VTSConfig.enabled = false;
+    this.autoSaveSettings();
+  },
+
+
+  connectToVTS() {
+      this.activeMenu = 'deploy-bot';
+      this.subMenu = 'vts_config';
+      if(!this.VTSConfig.enabled){
+        this.toggleVTSConnection();
+      }
+  },
 }
