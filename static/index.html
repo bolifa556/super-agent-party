@@ -1164,7 +1164,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                                 v-for="conv in group.conversations"
                                 :key="conv.id"
                                 class="chat-history-item"
-                                :class="{ active: conversationId === conv.id }"
+                                :class="{ active: conversationId === conv.id && (conv.groupId || 'default') === activeConversationGroupId }"
                                 @click="loadConversation(conv.id)"
                               >
                                 <div class="chat-history-item-main">
@@ -1537,7 +1537,7 @@ function updateElement(el, rawMarkdown, formatFn) {
                       <el-tooltip :content="t('newChat')" placement="top">
                         <el-button
                           v-if="!isCapsuleMode"
-                          @click="clearMessages"
+                          @click="startConversationInGroup()"
                           class="icon-btn clear-btn"
                           type="primary"
                           circle>

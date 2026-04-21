@@ -247,7 +247,7 @@ let vue_methods = {
             id: this.conversationId,
             title: this.generateConversationTitle(messagesPayload),
             mainAgent: this.mainAgent,
-            groupId: this.draftConversationGroupId || 'default',
+            groupId: this.activeConversationGroupId || this.draftConversationGroupId || 'default',
             timestamp: Date.now(),
             messages: this.messages,
             fileLinks: this.fileLinks,
@@ -260,7 +260,7 @@ let vue_methods = {
             conv.messages = this.messages;
             conv.timestamp = Date.now();
             conv.fileLinks = this.fileLinks;
-            conv.groupId = conv.groupId || this.draftConversationGroupId || 'default';
+            conv.groupId = conv.groupId || this.activeConversationGroupId || this.draftConversationGroupId || 'default';
         }
     }
     await this.autoSaveSettings();
@@ -670,7 +670,7 @@ let vue_methods = {
       this.ensureConversationGroups();
       const targetGroupId = groupId || this.activeConversationGroupId || this.draftConversationGroupId || 'default';
       this.setActiveConversationGroup(targetGroupId);
-      await this.clearMessages();
+      await this.clearMessages(targetGroupId);
     },
     async moveConversationToGroup(convId, groupId) {
       this.ensureConversationGroups();
@@ -738,6 +738,15 @@ let vue_methods = {
         this.conversationId = null;
         this.messages = [{ id: Date.now() + Math.random(), role: 'system', content: this.system_prompt }];
         this.fileLinks = [];
+        this.conversationGroups = [{
+          id: 'default',
+          name: this.t('defaultConversationGroup'),
+          createdAt: 0,
+          memoryConfig: {}
+        }];
+        this.collapsedConversationGroups = { default: false };
+        this.activeConversationGroupId = 'default';
+        this.draftConversationGroupId = 'default';
         await this.saveConversations();
       } catch (error) {
         if (error?.message === 'delete_failed') {
@@ -914,7 +923,7 @@ let vue_methods = {
       return preview || this.t('newChat');
     },
     async syncGroupMemoryAfterReply(userMessage, assistantMessage) {
-      const groupId = this.draftConversationGroupId || this.activeConversationGroupId || 'default';
+      const groupId = this.activeConversationGroupId || this.draftConversationGroupId || 'default';
       if (!groupId || groupId === 'default') return;
       if (!userMessage?.id || !assistantMessage?.id) return;
 
@@ -2506,7 +2515,7 @@ let vue_methods = {
                     asyncToolsID: this.asyncToolsID || [],
                     reasoning_effort: this.reasoning_effort,
                     conversation_id: this.stringifyEntityId(this.conversationId),
-                    group_id: this.stringifyEntityId(this.draftConversationGroupId || this.activeConversationGroupId || 'default'),
+                    group_id: this.stringifyEntityId(this.activeConversationGroupId || this.draftConversationGroupId || 'default'),
                     user_message_id: this.stringifyEntityId(latestUserMessage?.id || null),
                 }),
                 signal: this.abortController.signal 
@@ -2889,6 +2898,7 @@ let vue_methods = {
                     id: this.conversationId,
                     title: this.generateConversationTitle(messagesPayload),
                     mainAgent: this.mainAgent,
+                    groupId: this.activeConversationGroupId || this.draftConversationGroupId || 'default',
                     timestamp: Date.now(),
                     messages: this.messages,
                     fileLinks: this.fileLinks,
@@ -2901,6 +2911,7 @@ let vue_methods = {
                     conv.messages = this.messages;
                     conv.timestamp = Date.now();
                     conv.fileLinks = this.fileLinks;
+                    conv.groupId = conv.groupId || this.activeConversationGroupId || this.draftConversationGroupId || 'default';
                 }
             }
             this.saveConversations();
@@ -3621,8 +3632,11 @@ let vue_methods = {
     handleHeaderClick(section) {
       this.toggleSection(section)
     },
-    async clearMessages() {
+    async clearMessages(groupId = null) {
       this.stopGenerate();
+      const targetGroupId = groupId || this.activeConversationGroupId || this.draftConversationGroupId || 'default';
+      this.activeConversationGroupId = targetGroupId;
+      this.draftConversationGroupId = targetGroupId;
       if (this.system_prompt){
         this.messages = [{ role: 'system', content: this.system_prompt }];
       } else {
