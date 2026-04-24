@@ -8813,6 +8813,86 @@ handleCreateSlackSeparator(val) {
     stopTimer() {
       this.elapsedTime = Date.now() - this.startTime;
     },
+    async createOpenAIStreamingAudioChunk(response) {
+        const mimeType = (response.headers.get('content-type') || 'audio/mpeg').split(';')[0].trim().toLowerCase();
+        const hasBody = !!response.body;
+        const hasMediaSource = typeof MediaSource !== 'undefined';
+        const isMp3 = mimeType === 'audio/mpeg';
+        const isSupported = hasMediaSource && isMp3 ? MediaSource.isTypeSupported(mimeType) : false;
+        if (
+            !hasBody ||
+            !hasMediaSource ||
+            !isMp3 ||
+            !isSupported
+        ) {
+            const audioBlob = await response.blob();
+            return {
+                url: URL.createObjectURL(audioBlob),
+                buffer: await audioBlob.arrayBuffer(),
+                mimeType: audioBlob.type,
+                isStreaming: false,
+            };
+        }
+
+        const mediaSource = new MediaSource();
+        const audioUrl = URL.createObjectURL(mediaSource);
+        const reader = response.body.getReader();
+        mediaSource.addEventListener('sourceopen', () => {
+            let sourceBuffer;
+            try {
+                sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+            } catch (error) {
+                return;
+            }
+
+            const pending = [];
+            let readingDone = false;
+
+            const flush = () => {
+                if (sourceBuffer.updating) return;
+                if (pending.length > 0) {
+                    try {
+                        sourceBuffer.appendBuffer(pending.shift());
+                    } catch (error) {}
+                    return;
+                }
+                if (readingDone && mediaSource.readyState === 'open') {
+                    try {
+                        mediaSource.endOfStream();
+                    } catch (error) {}
+                }
+            };
+
+            sourceBuffer.addEventListener('updateend', flush);
+
+            (async () => {
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) {
+                            readingDone = true;
+                            flush();
+                            break;
+                        }
+                        if (value && value.byteLength) {
+                            pending.push(value);
+                            flush();
+                        }
+                    }
+                } catch (error) {
+                    return;
+                }
+            })();
+        }, { once: true });
+
+        return {
+            url: audioUrl,
+            buffer: null,
+            mimeType,
+            isStreaming: true,
+        };
+    },
+
     async processTTSChunk(message, index) {
         let voice = message.chunks_voice[index];
         const chunk = message.ttsChunks[index];
@@ -11055,20 +11135,43 @@ resumeRead() {
             ttsSettings: Settings,
             text: SampleText,
             index: 0,          // 随便给个 index，后端不关心
-            voice: voice || 'default'
+            voice: voice || 'default',
+            extra_body: { stream: !!Settings.openaiStream }
           })
         });
         if (!res.ok) throw new Error('TTS failed');
 
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
+        const useOpenAIStreaming =
+          Settings.engine === 'openai' &&
+          Settings.openaiStream;
+        const audioChunkData = useOpenAIStreaming
+          ? await this.createOpenAIStreamingAudioChunk(res)
+          : await (async () => {
+              const blob = await res.blob();
+              return { url: URL.createObjectURL(blob) };
+            })();
+        const url = audioChunkData.url;
 
         /* 直接播放 */
-        const audio = new Audio(url);
+        if (this.previewAudio) {
+          try {
+            this.previewAudio.pause();
+          } catch (e) {}
+        }
+
+        const audio = new Audio();
+        audio.preload = 'auto';
+        audio.src = url;
+        this.previewAudio = audio;
         audio.play().catch(console.error);
 
         /* 播放完清掉内存 */
-        audio.onended = () => URL.revokeObjectURL(url);
+        audio.onended = () => {
+          if (this.previewAudio === audio) {
+            this.previewAudio = null;
+          }
+          URL.revokeObjectURL(url);
+        };
       } catch (e) {
         console.error('ClickToListen error', e);
       }
