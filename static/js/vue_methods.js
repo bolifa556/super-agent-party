@@ -2657,7 +2657,7 @@ let vue_methods = {
                             }
                             this.scrollToBottom();
                             
-                            if (this.ttsSettings.enabled) {
+                            if (this.ttsSettings.enabled && this.ttsSettings.engine !== 'openai') {
                                 const parts = delta.content.split('```');
                                 for (let i = 0; i < parts.length; i++) {
                                     if (!isCodeBlock) { tts_buffer += parts[i]; }
@@ -2901,9 +2901,33 @@ let vue_methods = {
                 }
             }
             
-            if (tts_buffer.trim() && this.ttsSettings.enabled) {
-                currentMsg.chunks_voice.push(this.cur_voice);
-                currentMsg.ttsChunks.push(tts_buffer);
+            if (this.ttsSettings.enabled) {
+                if (this.ttsSettings.engine === 'openai') {
+                    const finalTTSBuffer = currentMsg.pure_content || tts_buffer;
+                    const { chunks, chunks_voice, remaining, remaining_voice } = this.splitTTSBuffer(finalTTSBuffer);
+                    const mergedChunks = [...chunks];
+                    const mergedVoices = [...chunks_voice];
+
+                    if (remaining && remaining.trim()) {
+                        mergedChunks.push(remaining);
+                        mergedVoices.push(remaining_voice);
+                    }
+
+                    const finalText = mergedChunks
+                        .map(txt => String(txt || '').replace(/<\/?[^>]+>/g, '').trim())
+                        .filter(Boolean)
+                        .join(' ')
+                        .replace(/\s+/g, ' ')
+                        .trim();
+
+                    if (finalText) {
+                        currentMsg.chunks_voice = [mergedVoices[0] || remaining_voice || this.cur_voice || 'default'];
+                        currentMsg.ttsChunks = [finalText];
+                    }
+                } else if (tts_buffer.trim()) {
+                    currentMsg.chunks_voice.push(this.cur_voice);
+                    currentMsg.ttsChunks.push(tts_buffer);
+                }
             }
             
             currentMsg.generationFinished = true;
