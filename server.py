@@ -8425,15 +8425,22 @@ async def text_to_speech(request: Request):
             
             async def generate_audio():
                 response_format = target_format if target_format in ['mp3', 'opus', 'aac', 'flac', 'wav', 'pcm'] else 'mp3'
-                params = {'model': tts_settings.get('model', 'tts-1'), 'input': text, 'speed': max(0.25, min(4.0, speed)), 'response_format': response_format}
+                params = {
+                    'model': tts_settings.get('model', 'tts-1'),
+                    'input': text,
+                    'speed': max(0.25, min(4.0, speed)),
+                    'response_format': response_format,
+                    # Keep voice set even when reference audio is provided.
+                    'voice': tts_settings.get('openaiVoice', 'alloy'),
+                }
                 
                 ref_audio = tts_settings.get('gsvRefAudioPath', '')
                 if ref_audio:
                     audio_file_path = os.path.join(UPLOAD_FILES_DIR, ref_audio)
                     audio_base64 = base64.b64encode(open(audio_file_path, "rb").read()).decode('utf-8')
                     params['extra_body'] = {"references": [{"text": tts_settings.get('gsvPromptText', ''), "audio": f"data:audio/{Path(audio_file_path).suffix[1:]};base64,{audio_base64}"}]}
-                else:
-                    params['voice'] = tts_settings.get('openaiVoice', 'alloy')
+                if tts_settings.get('openaiStream', False):
+                    params.setdefault('extra_body', {})['stream'] = True
 
                 if tts_settings.get('openaiStream', False):
                     async with client.audio.speech.with_streaming_response.create(**params) as response:
